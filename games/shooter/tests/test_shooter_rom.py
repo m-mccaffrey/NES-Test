@@ -27,8 +27,13 @@ HUD_ALL_ROWS = slice(0, 24)
 GROUND_ROWS = slice(208, 240)      # below any enemy or crosshair start
 
 
+APU_STATUS = 0x4015   # read: bit set while that channel's length counter runs
+CH_PULSE1, CH_PULSE2, CH_TRIANGLE, CH_NOISE = 1, 2, 4, 8
+
+
 class ShooterTest(unittest.TestCase):
     four_score = True
+    start_game = True   # press START on the title screen in setUp
 
     def setUp(self):
         if self.four_score:
@@ -42,6 +47,10 @@ class ShooterTest(unittest.TestCase):
                 break
         else:
             self.fail("game loop never started")
+        if self.start_game:
+            self.m.press([START], 1)
+            self.m.step(1)
+            self.assertEqual(self.m.peek("_game_state"), D["STATE_PLAY"])
 
     # --- helpers ---------------------------------------------------------
     def active(self):
@@ -230,6 +239,95 @@ class Gameplay(ShooterTest):
         self.assertEqual(self.m.peek("_game_state"), D["STATE_PLAY"])
         self.assertEqual(self.m.peek("_lives"), D["START_LIVES"])
         self.assertEqual(self.active(), [1, 1, 1, 1])
+
+
+def white_pixels(frame, rows):
+    region = frame[rows].reshape(-1, 3).astype(int)
+    return int(np.sum(np.all(region > 200, axis=1)))
+
+
+class TitleScreen(ShooterTest):
+    start_game = False
+
+    def test_title_waits_for_start(self):
+        self.assertEqual(self.m.peek("_game_state"), D["STATE_TITLE"])
+        scroll = self.m.peek("_scroll_x")
+        self.m.press([0, A], 300)          # player 2 joins; nothing starts
+        self.assertEqual(self.m.peek("_game_state"), D["STATE_TITLE"])
+        self.assertEqual(self.m.peek("_scroll_x"), scroll)
+        self.assertEqual(self.m.peek("_lives"), D["START_LIVES"])
+        self.assertEqual(self.alive_enemies(), [])
+        self.assertEqual(self.active()[:2], [1, 1])
+
+    def test_title_text_is_removed_when_play_starts(self):
+        title_rows = slice(9 * 8, 13 * 8)
+        self.assertGreater(white_pixels(self.m.step(1), title_rows), 100)
+        self.m.press([0, 0, START], 1)     # unjoined player 3 joins and starts
+        self.m.step(4)
+        self.assertEqual(self.m.peek("_game_state"), D["STATE_PLAY"])
+        self.assertEqual(self.active()[2], 1)
+        # Only stars (a few pixels each) remain.
+        self.assertLess(white_pixels(self.m.frame, title_rows), 12)
+
+
+class PauseAndSound(ShooterTest):
+    def apu(self):
+        return self.m.nes[APU_STATUS]
+
+    def test_pause_freezes_everything(self):
+        self.m.step(120)
+        hud = self.m.frame[HUD_STATUS_ROWS].copy()
+        self.m.press([START], 1)
+        self.m.step(1)
+        self.assertEqual(self.m.peek("_game_state"), D["STATE_PAUSE"])
+        frozen = (self.m.peek("_scroll_x"), self.m.array("_enemy_x", E), self.crosshair(0))
+        self.m.press([RIGHT | A], 60)
+        self.assertEqual((self.m.peek("_scroll_x"), self.m.array("_enemy_x", E),
+                          self.crosshair(0)), frozen)
+        self.assertFalse(np.array_equal(hud, self.m.frame[HUD_STATUS_ROWS]), "no PAUSED text")
+        self.m.press([START], 1)
+        self.m.step(2)
+        self.assertEqual(self.m.peek("_game_state"), D["STATE_PLAY"])
+        self.assertNotEqual(self.m.peek("_scroll_x"), frozen[0])
+
+    def test_sound_effects_reach_the_apu(self):
+        # Silence all channels (clears length counters), then re-enable.
+        self.m.nes[APU_STATUS] = 0x00
+        self.m.nes[APU_STATUS] = 0x0F
+        self.m.step(1)
+        self.assertEqual(self.apu() & (CH_NOISE | CH_PULSE1 | CH_TRIANGLE), 0)
+        self.m.press([A], 1)                       # shot -> noise
+        self.m.step(1)
+        self.assertTrue(self.apu() & CH_NOISE, "no gunshot sound")
+        self.bot_kill(0)                           # hit -> pulse 1
+        self.m.step(1)
+        self.assertTrue(self.apu() & CH_PULSE1, "no hit sound")
+        lives = self.m.peek("_lives")
+        for _ in range(1500):                      # escape -> triangle
+            self.m.step(1)
+            if self.m.peek("_lives") < lives:
+                break
+        self.m.step(1)
+        self.assertTrue(self.apu() & CH_TRIANGLE, "no life-lost sound")
+
+
+class Armor(ShooterTest):
+    def test_armored_enemy_needs_three_hits_and_scores_30(self):
+        self.m.poke("_spawn_count", D["ARMOR_FIRST"])
+        self.m.poke("_spawn_timer", 1)
+        self.m.step(2)
+        kinds = self.m.array("_enemy_kind", E)
+        alive = self.alive_enemies()
+        self.assertEqual(len(alive), 1)
+        self.assertEqual(kinds[alive[0][0]], D["KIND_ARMOR"])
+        self.m.poke("_spawn_timer", 255)
+        before = self.score(0)
+        self.bot_kill(0)   # keeps firing until the score changes
+        self.assertEqual(self.score(0), before + 30)
+        # It survived two hits first (hp 3 -> 1), and the second pulse
+        # channel played the armour ping.
+        self.assertEqual(self.m.peek("_enemy_hp", alive[0][0]), 1)
+        self.assertTrue(self.m.nes[APU_STATUS] & CH_PULSE2, "no armour ping")
 
 
 class Rendering(ShooterTest):

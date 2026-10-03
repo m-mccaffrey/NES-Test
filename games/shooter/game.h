@@ -45,8 +45,16 @@
 
 #define START_LIVES    5
 
+#define KIND_BAT       0
+#define KIND_ARMOR     1    /* takes ARMOR_HP hits, faster, worth 30 */
+#define ARMOR_HP       3
+#define ARMOR_FIRST    8    /* spawns before armoured enemies appear */
+#define HIT_FLASH      6    /* frames an armoured enemy flashes when hit */
+
 #define STATE_PLAY 0
 #define STATE_OVER 1
+#define STATE_TITLE 2
+#define STATE_PAUSE 3
 
 #define ENEMY_NONE      0
 #define ENEMY_ALIVE     1
@@ -59,6 +67,8 @@
 #define EV_GAME_OVER 0x08
 #define EV_RESTART   0x10
 #define EV_JOIN      0x20
+#define EV_ARMOR     0x40  /* hit an armoured enemy without killing it */
+#define EV_PAUSE     0x80  /* paused, unpaused or started from the title */
 
 extern unsigned char game_state;
 extern unsigned char game_events;
@@ -77,12 +87,16 @@ extern unsigned char enemy_y[MAX_ENEMIES];
 extern unsigned char enemy_base_y[MAX_ENEMIES];
 extern unsigned char enemy_timer[MAX_ENEMIES]; /* age, or explosion countdown */
 extern unsigned char enemy_owner[MAX_ENEMIES]; /* player who destroyed it */
+extern unsigned char enemy_kind[MAX_ENEMIES];
+extern unsigned char enemy_hp[MAX_ENEMIES];
+extern unsigned char enemy_flash[MAX_ENEMIES]; /* hit flash countdown */
+extern unsigned char spawn_count;              /* saturates at 255 */
 
 extern unsigned char spawn_timer;
 extern unsigned char spawn_interval;
 extern unsigned char rng;
 
-/* Power-on reset: only player 1 is in the game. */
+/* Power-on reset: title screen, only player 1 joined. */
 void game_init(void);
 
 /* New round with the same players: scores, lives and enemies reset. */

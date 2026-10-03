@@ -40,7 +40,8 @@ static const unsigned char palette[32] = {
 #define HUD_STATUS_LEN 22
 #define HUD_SCORES 3                          /* offset of the score text */
 #define HUD_STATUS (HUD_SCORES + HUD_SCORES_LEN + 3)
-static unsigned char hud[HUD_STATUS + HUD_STATUS_LEN + 1] = {
+#define HUD_RESTORE (HUD_STATUS + HUD_STATUS_LEN)   /* optional 32-tile row rewrite */
+static unsigned char hud[HUD_RESTORE + 3 + 32 + 1] = {
     MSB(NTADR_A(1, ROW_SCORES)) | NT_UPD_HORZ, LSB(NTADR_A(1, ROW_SCORES)), HUD_SCORES_LEN,
 };
 
@@ -51,6 +52,18 @@ static const unsigned char star2[16]   = { 0xff, 27, 0xff, 12, 0xff, 7, 0xff, 14
 
 static const char text_lives[] = "LIVES ";
 static const char text_over[]  = "GAME OVER  PRESS START";
+static const char text_start[] = "PRESS START   A: JOIN";
+static const char text_pause[] = "PAUSED";
+
+/* Title text, drawn over the sky in nametable A and removed when play
+   starts (one row per frame, through the HUD update list). */
+#define ROW_TITLE1 9
+#define ROW_TITLE2 12
+static const char title1[] = "RAIL  RAIDERS";
+static const char title2[] = "1-4 PLAYERS";
+static unsigned char restore_rows;   /* bit 0: ROW_TITLE1, bit 1: ROW_TITLE2 */
+
+#define APU(addr) (*(volatile unsigned char *)(addr))
 
 /* Exported for the emulator tests. */
 unsigned int scroll_x;
@@ -61,6 +74,24 @@ static unsigned char row[32];
 static unsigned char *hp;
 static const char *sp;
 
+/* Fill row[] with sky row r (4..19). */
+static void build_sky_row(void)
+{
+    memfill(row, 0, 32);
+    k = r - 4;
+    row[star1_a[k]] = TILE_STAR1;
+    row[star1_b[k]] = TILE_STAR1;
+    if (star2[k] != 0xff)
+        row[star2[k]] = TILE_STAR2;
+}
+
+static void draw_text(unsigned int adr, const char *s)
+{
+    vram_adr(adr);
+    while (*s)
+        vram_put(*s++ + TILE_TEXT_WHITE);
+}
+
 static void draw_nametable(unsigned int nt)
 {
     vram_adr(nt);
@@ -69,12 +100,8 @@ static void draw_nametable(unsigned int nt)
 
     /* Rows are built in a buffer and written with vram_write(): much
        faster than one vram_put() call per tile. */
-    for (r = 0; r < ROW_PEAKS - 4; ++r) {
-        memfill(row, 0, 32);
-        row[star1_a[r]] = TILE_STAR1;
-        row[star1_b[r]] = TILE_STAR1;
-        if (star2[r] != 0xff)
-            row[star2[r]] = TILE_STAR2;
+    for (r = 4; r < ROW_PEAKS; ++r) {
+        build_sky_row();
         vram_write(row, 32);
     }
     for (c = 0; c < 32; ++c)
@@ -115,22 +142,38 @@ static void hud_build(void)
     hp[-3] = MSB(NTADR_A(1, ROW_STATUS)) | NT_UPD_HORZ;
     hp[-2] = LSB(NTADR_A(1, ROW_STATUS));
     hp[-1] = HUD_STATUS_LEN;
-    sp = game_state == STATE_OVER ? text_over : text_lives;
+    sp = game_state == STATE_OVER ? text_over :
+         game_state == STATE_TITLE ? text_start :
+         game_state == STATE_PAUSE ? text_pause : text_lives;
     for (k = 0; *sp; ++k)
         *hp++ = *sp++ + TILE_TEXT_WHITE;
-    if (game_state != STATE_OVER) {
+    if (game_state == STATE_PLAY) {
         *hp++ = '0' + lives + TILE_TEXT_WHITE;
         ++k;
     }
     for (; k < HUD_STATUS_LEN; ++k)
         *hp++ = ' ' + TILE_TEXT_WHITE;
+
+    /* After the title, put the stars back under the title text. */
+    if (restore_rows && game_state != STATE_TITLE) {
+        r = restore_rows & 1 ? ROW_TITLE1 : ROW_TITLE2;
+        restore_rows &= restore_rows & 1 ? 2 : 1;
+        *hp++ = MSB(NTADR_A(0, r)) | NT_UPD_HORZ;
+        *hp++ = LSB(NTADR_A(0, r));
+        *hp++ = 32;
+        build_sky_row();
+        for (k = 0; k < 32; ++k)
+            *hp++ = row[k];
+    }
     *hp = NT_UPD_EOF;
 }
 
 static void draw_enemy(void)
 {
     if (enemy_state[e] == ENEMY_ALIVE) {
-        t = TILE_ENEMY + ((game_frame & 8) >> 1);
+        if (enemy_flash[e] & 2)
+            return;   /* flicker when hit */
+        t = (enemy_kind[e] == KIND_ARMOR ? TILE_ARMOR : TILE_ENEMY) + ((game_frame & 8) >> 1);
         k = 0;
     } else {
         t = TILE_EXPLODE + (enemy_timer[e] < EXPLODE_FRAMES / 2 ? 4 : 0);
@@ -172,11 +215,47 @@ static void draw_sprites(void)
     oam_hide_rest(id);
 }
 
+/* Sound effects, written straight to the APU (one channel each). */
+static void play_sounds(void)
+{
+    if (game_events & EV_SHOT) {          /* noise: gunshot */
+        APU(0x400c) = 0x02;
+        APU(0x400e) = 0x0a;
+        APU(0x400f) = 0x08;
+    }
+    if (game_events & EV_HIT) {           /* pulse 1: falling boom */
+        APU(0x4000) = 0x84;
+        APU(0x4001) = 0x82;
+        APU(0x4002) = 0x40;
+        APU(0x4003) = 0x09;
+    }
+    if (game_events & EV_ARMOR) {         /* pulse 2: high ping */
+        APU(0x4004) = 0x82;
+        APU(0x4005) = 0x00;
+        APU(0x4006) = 0x30;
+        APU(0x4007) = 0x08;
+    } else if (game_events & (EV_JOIN | EV_PAUSE | EV_RESTART)) {   /* pulse 2: rising blip */
+        APU(0x4004) = 0x44;
+        APU(0x4005) = 0x8b;
+        APU(0x4006) = 0xd0;
+        APU(0x4007) = 0x08;
+    }
+    if (game_events & EV_LIFE_LOST) {     /* triangle: low thud */
+        APU(0x4008) = 0x30;
+        APU(0x400a) = 0x80;
+        APU(0x400b) = 0x0a;
+    }
+}
+
 void main(void)
 {
     pal_all(palette);
     draw_nametable(NAMETABLE_A);
     draw_nametable(NAMETABLE_B);
+    draw_text(NTADR_A(10, ROW_TITLE1), title1);
+    draw_text(NTADR_A(11, ROW_TITLE2), title2);
+    restore_rows = 3;
+    APU(0x4015) = 0x0f;
 
     game_init();
     hud_build();
@@ -211,6 +290,7 @@ void main(void)
             pal_col(0, flash ? FLASH_COLOR : palette[0]);
         }
 
+        play_sounds();
         draw_sprites();
         hud_build();
     }

@@ -57,6 +57,7 @@ static void setup(void)
 {
     memset(pads, 0, sizeof pads);
     game_init();
+    game_restart();      /* skip the title screen */
     spawn_timer = 255;   /* keep random spawns out of the way */
 }
 
@@ -339,8 +340,126 @@ static void test_simultaneous_escapes_dont_underflow(void)
     CHECK_EQ(game_state, STATE_OVER);
 }
 
+static void put_armor(void)
+{
+    enemy_under_crosshair(0);
+    enemy_kind[0] = KIND_ARMOR;
+    enemy_hp[0] = ARMOR_HP;
+}
+
+static void test_title_screen(void)
+{
+    memset(pads, 0, sizeof pads);
+    game_init();
+    CHECK_EQ(game_state, STATE_TITLE);
+    /* Nothing happens on the title: no spawns, no lives lost. */
+    frames(SPAWN_FIRST * 3);
+    CHECK_EQ(count_enemies(ENEMY_NONE), MAX_ENEMIES);
+    /* A on another pad joins but doesn't start. */
+    tap(2, BTN_A);
+    CHECK_EQ(player_active[2], 1);
+    CHECK_EQ(game_state, STATE_TITLE);
+    tap(0, BTN_START);
+    CHECK_EQ(game_state, STATE_PLAY);
+    CHECK_EQ(lives, START_LIVES);
+
+    /* An unjoined player's START joins and starts in one press. */
+    game_init();
+    tap(3, BTN_START);
+    CHECK_EQ(player_active[3], 1);
+    CHECK_EQ(game_state, STATE_PLAY);
+}
+
+static void test_pause(void)
+{
+    int x, ex;
+    setup();
+    tap(1, BTN_A);
+    enemy_under_crosshair(0);
+    ex = enemy_x[0];
+    pads[1] = BTN_START;
+    frames(1);
+    CHECK_EQ(game_events & EV_PAUSE, EV_PAUSE);
+    pads[1] = 0;
+    frames(1);
+    CHECK_EQ(game_state, STATE_PAUSE);
+    x = cross_x[0];
+    pads[0] = BTN_RIGHT | BTN_A;
+    spawn_timer = 1;
+    frames(30);
+    pads[0] = 0;
+    CHECK_EQ(cross_x[0], x);                       /* frozen */
+    CHECK_EQ(enemy_x[0], ex);                      /* pausing happens before movement */
+    CHECK_EQ(enemy_state[0], ENEMY_ALIVE);         /* can't shoot while paused */
+    CHECK_EQ(count_enemies(ENEMY_ALIVE), 1);       /* no spawns */
+    frames(1);
+    tap(0, BTN_START);                             /* any active player resumes */
+    CHECK_EQ(game_state, STATE_PLAY);
+    /* An unjoined player's START joins rather than pausing. */
+    tap(3, BTN_START);
+    CHECK_EQ(player_active[3], 1);
+    CHECK_EQ(game_state, STATE_PLAY);
+}
+
+static void test_armor_takes_three_hits(void)
+{
+    int i;
+    setup();
+    put_armor();
+    for (i = 0; i < ARMOR_HP - 1; i++) {
+        pads[0] = BTN_A;
+        frames(1);
+        CHECK_EQ(game_events & EV_ARMOR, EV_ARMOR);
+        CHECK_EQ(enemy_state[0], ENEMY_ALIVE);
+        CHECK_EQ(enemy_flash[0] > 0, 1);
+        pads[0] = 0;
+        frames(SHOT_COOLDOWN);
+        /* keep it under the crosshair */
+        enemy_x[0] = cross_x[0] + CROSS_HOT - 4;
+        enemy_y[0] = enemy_base_y[0] = cross_y[0] + CROSS_HOT - 4;
+    }
+    CHECK_EQ(score_value(0), 0);
+    pads[0] = BTN_A;
+    frames(1);
+    pads[0] = 0;
+    CHECK_EQ(enemy_state[0], ENEMY_EXPLODING);
+    CHECK_EQ(score_value(0), 30);
+}
+
+static void test_armor_is_faster_and_spawns_later(void)
+{
+    int i, armored = 0, early_armor = 0;
+    setup();
+    put_armor();
+    enemy_x[0] = 200;
+    frames(20);
+    CHECK_EQ(enemy_x[0], 200 - 30);
+
+    setup();
+    lives = 99;
+    for (i = 0; i < 60 * 60; i++) {
+        int before = spawn_count, j;
+        frames(1);
+        for (j = 0; j < MAX_ENEMIES; j++)
+            if (spawn_count != before && enemy_state[j] == ENEMY_ALIVE &&
+                enemy_x[j] == ENEMY_SPAWN_X && enemy_kind[j] == KIND_ARMOR) {
+                armored++;
+                if (before < ARMOR_FIRST)
+                    early_armor++;
+            }
+        if (game_state != STATE_PLAY)
+            game_restart(), lives = 99;
+    }
+    CHECK_EQ(armored > 3, 1);
+    CHECK_EQ(early_armor, 0);
+}
+
 int main(void)
 {
+    test_title_screen();
+    test_pause();
+    test_armor_takes_three_hits();
+    test_armor_is_faster_and_spawns_later();
     test_init();
     test_join();
     test_inactive_players_ignore_input();

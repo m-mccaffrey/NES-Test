@@ -17,6 +17,10 @@ unsigned char enemy_y[MAX_ENEMIES];
 unsigned char enemy_base_y[MAX_ENEMIES];
 unsigned char enemy_timer[MAX_ENEMIES];
 unsigned char enemy_owner[MAX_ENEMIES];
+unsigned char enemy_kind[MAX_ENEMIES];
+unsigned char enemy_hp[MAX_ENEMIES];
+unsigned char enemy_flash[MAX_ENEMIES];
+unsigned char spawn_count;
 
 unsigned char spawn_timer;
 unsigned char spawn_interval;
@@ -25,7 +29,7 @@ unsigned char rng;
 static unsigned char pad_prev[NUM_PLAYERS];
 
 /* Scratch variables: file-static is much faster than locals under cc65. */
-static unsigned char p, j, d, pad, pressed, hx, hy, restart;
+static unsigned char p, j, d, pad, pressed, hx, hy, restart, start, pause;
 
 #define CROSS_START_Y 128
 static const unsigned char cross_start_x[NUM_PLAYERS] = { 64, 104, 144, 184 };
@@ -62,6 +66,7 @@ void game_restart(void)
         enemy_state[j] = ENEMY_NONE;
 
     lives = START_LIVES;
+    spawn_count = 0;
     spawn_timer = SPAWN_FIRST;
     spawn_interval = SPAWN_START;
     game_state = STATE_PLAY;
@@ -77,6 +82,7 @@ void game_init(void)
     rng = 0x5A;
     game_frame = 0;
     game_restart();
+    game_state = STATE_TITLE;
 }
 
 /* +10 points for player p (tens digit, with carry), capped at 9990. */
@@ -118,10 +124,20 @@ static void fire(void)
         if (enemy_state[j] == ENEMY_ALIVE &&
             (unsigned char)(hx - enemy_x[j]) < ENEMY_SIZE &&
             (unsigned char)(hy - enemy_y[j]) < ENEMY_SIZE) {
+            enemy_owner[j] = p;
+            if (enemy_hp[j] > 1) {
+                --enemy_hp[j];
+                enemy_flash[j] = HIT_FLASH;
+                game_events |= EV_ARMOR;
+                return;
+            }
             enemy_state[j] = ENEMY_EXPLODING;
             enemy_timer[j] = EXPLODE_FRAMES;
-            enemy_owner[j] = p;
             add_score();
+            if (enemy_kind[j] == KIND_ARMOR) {
+                add_score();
+                add_score();
+            }
             game_events |= EV_HIT;
             return;
         }
@@ -130,7 +146,7 @@ static void fire(void)
 
 static void update_players(const unsigned char *pads)
 {
-    restart = 0;
+    restart = start = pause = 0;
 
     for (p = 0; p < NUM_PLAYERS; ++p) {
         pad = pads[p];
@@ -144,6 +160,24 @@ static void update_players(const unsigned char *pads)
                 reset_crosshair();
                 game_events |= EV_JOIN;
             }
+            if (game_state != STATE_TITLE || !(pressed & BTN_START))
+                continue;
+        }
+
+        if (game_state == STATE_TITLE) {
+            if (pressed & BTN_START)
+                start = 1;
+            continue;
+        }
+
+        if (game_state == STATE_PAUSE) {
+            if (pressed & BTN_START)
+                pause = 1;
+            continue;
+        }
+
+        if (game_state == STATE_PLAY && (pressed & BTN_START)) {
+            pause = 1;
             continue;
         }
 
@@ -175,10 +209,15 @@ static void lose_life(void)
 static void update_enemies(void)
 {
     for (j = 0; j < MAX_ENEMIES; ++j) {
-        if (enemy_state[j] == ENEMY_EXPLODING) {
+        if (enemy_state[j] == ENEMY_EXPLODING && game_state != STATE_PAUSE) {
             if (--enemy_timer[j] == 0)
                 enemy_state[j] = ENEMY_NONE;
         } else if (enemy_state[j] == ENEMY_ALIVE && game_state == STATE_PLAY) {
+            if (enemy_flash[j])
+                --enemy_flash[j];
+            /* Armoured enemies move an extra pixel every other frame. */
+            if (enemy_kind[j] == KIND_ARMOR && (game_frame & 1) && enemy_x[j])
+                --enemy_x[j];
             if (enemy_x[j] == 0) {
                 /* Got past the players. */
                 enemy_state[j] = ENEMY_NONE;
@@ -210,6 +249,16 @@ static void spawn_enemies(void)
             enemy_base_y[j] = ENEMY_MIN_Y + (next_rand() & 127);
             enemy_y[j] = enemy_base_y[j];
             enemy_timer[j] = 0;
+            enemy_flash[j] = 0;
+            if (spawn_count >= ARMOR_FIRST && (spawn_count & 3) == 0) {
+                enemy_kind[j] = KIND_ARMOR;
+                enemy_hp[j] = ARMOR_HP;
+            } else {
+                enemy_kind[j] = KIND_BAT;
+                enemy_hp[j] = 1;
+            }
+            if (spawn_count != 255)
+                ++spawn_count;
             return;
         }
     }
@@ -221,6 +270,16 @@ void game_update(const unsigned char *pads)
     ++game_frame;
 
     update_players(pads);
+    if (start) {
+        game_restart();
+        game_events |= EV_PAUSE;
+        return;
+    }
+    if (pause) {
+        game_state = game_state == STATE_PAUSE ? STATE_PLAY : STATE_PAUSE;
+        game_events |= EV_PAUSE;
+        return;
+    }
     if (restart) {
         game_restart();
         game_events |= EV_RESTART;

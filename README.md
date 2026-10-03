@@ -25,12 +25,15 @@ input settings.
 The camera moves right along a scrolling landscape while bats fly in from
 the right. Each player aims a crosshair in their own colour and shoots.
 
-- **D-pad** aims, **A** fires (one shot per press, 10-frame cooldown).
+- The title screen ("RAIL RAIDERS") waits for **Start**. Players can join there with **A**.
+- **D-pad** aims, **A** fires (one shot per press, 10-frame cooldown), **Start** pauses and resumes.
 - Player 1 starts in the game. Players 2–4 join any time by pressing **A** or **Start**.
 - A hit gives 10 points to whoever made it. The explosion is drawn in that player's colour.
 - A bat that reaches the left edge costs the team one of its 5 shared lives, and the screen flashes.
 - At 0 lives it's game over; any player presses **Start** to play again.
 - Bats spawn faster over time, with up to 6 on screen at once.
+- From the 9th spawn on, every 4th enemy is an armoured beetle. It takes 3 hits (and flickers when hit), moves 1.5× faster and is worth 30 points.
+- Sound effects are written straight to the APU: gunshot (noise), hit (falling pulse), armour ping, join/pause blip (pulse 2) and life lost (triangle). neslib's FamiTone update is disabled, because with no music it would overwrite them every frame.
 
 How it's put together:
 
@@ -61,11 +64,13 @@ Shooter emulator tests:
 - **Input:** every button on every one of the 4 pads arrives at the right bit. With the Four Score unplugged there are no phantom players 3/4, and 2 players still work.
 - **Gameplay:** for each of the 4 players, a bot steers the crosshair onto a bat and shoots it. The test checks that only that player's score and HUD slot change. Another test lets bats escape, then checks lives, the red flash (with every HUD colour still visible), game over, the freeze, and restart.
 - **Rendering:** the HUD rows stay pixel-identical while the ground shifts exactly 1 px per frame, which shows the split works. The score slots use 4 distinct player colours, and the game-over text appears.
+- **Title, pause, armour:** the title screen holds until Start and its text is cleared when play begins. Pause freezes scrolling, enemies and crosshairs and shows PAUSED. An armoured enemy survives two hits and scores 30 on the third.
+- **Sound:** each effect is confirmed on the right APU channel by reading the `$4015` length-counter status.
 - **Performance:** 4 players moving and firing against full enemy waves for 40 seconds produce zero lag frames. The ROM counts main-loop overruns in `lag_frames`.
 
 The tests have been checked against deliberately broken builds. With the
-signature check removed, the split removed, or a slow main loop, the
-matching test fails.
+signature check removed, the split removed, a slow main loop, the sound
+calls removed, or the title text left behind, the matching test fails.
 
 cynes upstream only emulates 2 controllers. `tools/cynes-fourscore.patch`
 (about 50 lines, against a pinned commit) adds `nes.four_score = True` and a

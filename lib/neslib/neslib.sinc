@@ -125,7 +125,9 @@ nmi:
 
 @skipNtsc:
 
-	jsr FamiToneUpdate
+	; NES-Test: FamiToneUpdate disabled. With no music it would still rewrite
+	; the APU every frame and cut off sound effects that games write directly.
+	; jsr FamiToneUpdate
 
 	pla
 	tay

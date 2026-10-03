@@ -20,5 +20,6 @@
 
 #define TILE_ENEMY      0x80   /* 2 frames of 4 tiles (16x16) */
 #define TILE_EXPLODE    0x88   /* 2 frames of 4 tiles (16x16) */
+#define TILE_ARMOR      0x90   /* 2 frames of 4 tiles (16x16) */
 
 #endif
