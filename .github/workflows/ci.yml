@@ -1,0 +1,20 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: sudo apt-get update && sudo apt-get install -y cc65
+      - run: pip install cynes numpy
+      - run: make test
+      - run: make screenshot HOLD="right down" FRAMES=120
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rom
+          path: |
+            build/game.nes
+            build/screenshot.png
