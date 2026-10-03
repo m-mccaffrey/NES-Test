@@ -1,4 +1,8 @@
-.importzp _oam_off			;make this ZP variable accessible to assembly code
+.exportzp _oam_off			;NES-Test: defined here instead of in each game's C code
+
+.segment "ZEROPAGE"
+
+_oam_off:	.res 1				;next free OAM offset for the helpers below
 
 .segment "CODE"
 

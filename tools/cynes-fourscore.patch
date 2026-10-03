@@ -1,0 +1,165 @@
+diff --git a/pyproject.toml b/pyproject.toml
+index 0ea1da2..9d15a6a 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,6 +1,6 @@
+ [project]
+ name = "cynes"
+-version = "0.1.2"
++version = "0.1.2+fourscore"
+ description = "C/C++ NES emulator with Python bindings"
+ readme = "README.md"
+ authors = [{ name = "Theo Combey", email = "combey.theo@hotmail.com" }]
+diff --git a/src/nes.cpp b/src/nes.cpp
+index 39fdf33..da1e326 100644
+--- a/src/nes.cpp
++++ b/src/nes.cpp
+@@ -32,8 +32,9 @@ NES::NES(const std::filesystem::path& path)
+     std::memcpy(_memory_palette.get(), PALETTE_RAM_BOOT_VALUES, 0x20);
+     std::memset(_memory_cpu.get(), 0x00, 0x800);
+     std::memset(_memory_oam.get(), 0x00, 0x100);
+-    std::memset(_controller_status, 0x00, 0x2);
+-    std::memset(_controller_shifters, 0x00, 0x2);
++    std::memset(_controller_status, 0x00, sizeof(_controller_status));
++    std::memset(_controller_shifters, 0x00, sizeof(_controller_shifters));
++    _four_score = false;
+ 
+     for (int i = 0; i < 8; i++) {
+         dummy_read();
+@@ -170,9 +171,12 @@ uint8_t NES::get_open_bus() const {
+     return _open_bus;
+ }
+ 
+-bool NES::step(uint16_t controllers, unsigned int frames) {
++bool NES::step(uint32_t controllers, bool four_score, unsigned int frames) {
+     _controller_status[0x0] = controllers & 0xFF;
+-    _controller_status[0x1] = controllers >> 8;
++    _controller_status[0x1] = (controllers >> 8) & 0xFF;
++    _controller_status[0x2] = (controllers >> 16) & 0xFF;
++    _controller_status[0x3] = (controllers >> 24) & 0xFF;
++    _four_score = four_score;
+ 
+     for (unsigned int k = 0; k < frames; k++) {
+         while (!ppu.is_frame_ready()) {
+@@ -211,15 +215,33 @@ Mapper& NES::get_mapper() {
+ }
+ 
+ void NES::load_controller_shifter(bool polling) {
+-    if (polling) {
+-        memcpy(_controller_shifters, _controller_status, 0x2);
++    if (!polling) {
++        return;
++    }
++
++    for (int port = 0; port < 2; port++) {
++        uint32_t report = uint32_t(_controller_status[port]) << 24;
++
++        if (_four_score) {
++            // Four Score: 8 bits of controller 1/2, 8 bits of controller 3/4,
++            // then the signature (bit 20 set on $4016, bit 19 on $4017).
++            static const uint8_t SIGNATURE[2] = {0x10, 0x20};
++            report |= uint32_t(_controller_status[port + 2]) << 16;
++            report |= uint32_t(SIGNATURE[port]) << 8;
++            report |= 0xFF;
++        } else {
++            // Official standard controllers report 1 after the 8th read.
++            report |= 0x00FFFFFF;
++        }
++
++        _controller_shifters[port] = report;
+     }
+ }
+ 
+ uint8_t NES::poll_controller(uint8_t player) {
+-    uint8_t value = _controller_shifters[player] >> 7;
++    uint8_t value = _controller_shifters[player] >> 31;
+ 
+-    _controller_shifters[player] <<= 1;
++    _controller_shifters[player] = (_controller_shifters[player] << 1) | 1;
+ 
+     return (_open_bus & 0xE0) | value;
+ }
+diff --git a/src/nes.hpp b/src/nes.hpp
+index 8961b80..f72c82d 100644
+--- a/src/nes.hpp
++++ b/src/nes.hpp
+@@ -91,11 +91,14 @@ public:
+     uint8_t get_open_bus() const;
+ 
+     /// Step the emulation by the given amount of frame.
+-    /// @param controllers Controllers states (first 8-bits for controller 1, the
+-    /// remaining 8-bits fro controller 2).
++    /// @param controllers Controllers states, 8 bits per controller: bits 0-7
++    /// controller 1, 8-15 controller 2, 16-23 controller 3, 24-31 controller 4.
++    /// Controllers 3 and 4 are only visible when `four_score` is set.
++    /// @param four_score Emulate an NES Four Score adapter (24-bit reports with
++    /// signature) instead of two standard controllers.
+     /// @param frames Number of frame of the step.
+     /// @return True if the CPU is frozen, false otherwise.
+-    bool step(uint16_t controllers, unsigned int frames);
++    bool step(uint32_t controllers, bool four_score, unsigned int frames);
+ 
+     /// Stream the NES state into / out of a save state.
+     /// @param save_state Current save state.
+@@ -124,8 +127,9 @@ private:
+ 
+     uint8_t _open_bus;
+ 
+-    uint8_t _controller_status[0x2];
+-    uint8_t _controller_shifters[0x2];
++    uint8_t _controller_status[0x4];
++    uint32_t _controller_shifters[0x2];
++    bool _four_score;
+ 
+ private:
+     void load_controller_shifter(bool polling);
+diff --git a/src/wrapper.cpp b/src/wrapper.cpp
+index 92db33e..ba61587 100644
+--- a/src/wrapper.cpp
++++ b/src/wrapper.cpp
+@@ -24,6 +24,7 @@ size_t get_save_state_size(NES& nes) {
+ 
+ wrapper::NesWrapper::NesWrapper(const std::filesystem::path& path_rom)
+     : controller{0x00}
++    , four_score{false}
+     , _nes{path_rom}
+     , _save_state_size{get_save_state_size(_nes)}
+     , _frame{
+@@ -38,7 +39,7 @@ wrapper::NesWrapper::NesWrapper(const std::filesystem::path& path_rom)
+ }
+ 
+ const pybind11::array_t<uint8_t>& wrapper::NesWrapper::step(uint32_t frames) {
+-    _crashed |= _nes.step(controller, frames);
++    _crashed |= _nes.step(controller, four_score, frames);
+     return _frame;
+ }
+ 
+@@ -109,7 +110,13 @@ PYBIND11_MODULE(emulator, mod) {
+         .def_readwrite(
+             "controller",
+             &wrapper::NesWrapper::controller,
+-            "Emulator controller state."
++            "Emulator controller state (8 bits per controller, controller 1 in the "
++            "low byte, up to 4 controllers)."
++        )
++        .def_readwrite(
++            "four_score",
++            &wrapper::NesWrapper::four_score,
++            "Emulate an NES Four Score adapter (enables controllers 3 and 4)."
+         )
+         .def_property_readonly(
+             "has_crashed",
+diff --git a/src/wrapper.hpp b/src/wrapper.hpp
+index 1c64506..17742c4 100644
+--- a/src/wrapper.hpp
++++ b/src/wrapper.hpp
+@@ -61,7 +61,8 @@ public:
+     inline bool has_crashed() const { return _crashed; }
+ 
+ public:
+-    uint16_t controller;
++    uint32_t controller;
++    bool four_score;
+ 
+ private:
+     NES _nes;

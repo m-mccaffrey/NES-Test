@@ -1,71 +1,36 @@
-"""Emulator-driven tests: boot the real ROM in the cynes headless NES
-emulator, press buttons, and inspect RAM, OAM and the rendered frame.
+"""Emulator-driven tests for the D-pad demo: boot the real ROM in cynes,
+press buttons, and inspect RAM, OAM and the rendered frame.
 
-Run with:  make rom-test   (needs `pip install cynes numpy`)
+Run with:  make rom-test-demo   (needs `pip install cynes numpy`)
 """
 import os
-import re
+import sys
 import unittest
 
 import numpy as np
-from cynes import (NES, NES_INPUT_DOWN, NES_INPUT_LEFT, NES_INPUT_RIGHT,
-                   NES_INPUT_UP)
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ROM = os.path.join(ROOT, "build", "game.nes")
-LABELS = os.path.join(ROOT, "build", "game.labels")
-HEADER = os.path.join(ROOT, "src", "player.h")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "tools"))
+import nestest  # noqa: E402
+from nestest import DOWN, LEFT, RIGHT, UP  # noqa: E402
 
+DEF = nestest.load_defines("games/demo/player.h")
 OAM_BUF = 0x0200
 BOOT_FRAMES = 30
 
 
-def load_labels():
-    labels = {}
-    with open(LABELS) as f:
-        for line in f:
-            m = re.match(r"al ([0-9A-Fa-f]+) \.(\S+)", line)
-            if m:
-                labels[m.group(2)] = int(m.group(1), 16)
-    return labels
-
-
-def load_defines():
-    """Pull numeric #defines out of player.h so tests track the C source."""
-    defs = {}
-    with open(HEADER) as f:
-        for line in f:
-            m = re.match(r"#define (\w+)\s+(.+?)\s*(/\*.*)?$", line)
-            if m:
-                try:
-                    defs[m.group(1)] = eval(m.group(2), {}, dict(defs))
-                except Exception:
-                    pass
-    return defs
-
-
-LBL = load_labels()
-DEF = load_defines()
-PLAYER = LBL["_player"]
-
-
-class RomTest(unittest.TestCase):
+class DemoRomTest(unittest.TestCase):
     def setUp(self):
-        self.nes = NES(ROM)
-        self.frame = self.nes.step(BOOT_FRAMES)
-        self.assertFalse(self.nes.has_crashed)
+        self.m = nestest.Machine("demo")
+        self.m.step(BOOT_FRAMES)
 
     def hold(self, buttons, frames):
-        self.nes.controller = buttons
-        self.frame = self.nes.step(frames)
-        self.nes.controller = 0
-        self.assertFalse(self.nes.has_crashed)
+        self.m.press([buttons], frames)
 
     def pos(self):
-        return self.nes[PLAYER], self.nes[PLAYER + 1]
+        return tuple(self.m.array("_player", 2))
 
     def test_rom_header(self):
-        with open(ROM, "rb") as f:
+        with open(nestest.rom_path("demo"), "rb") as f:
             data = f.read()
         self.assertEqual(data[:4], b"NES\x1a")
         self.assertEqual(len(data), 16 + 32768 + 8192)
@@ -79,8 +44,7 @@ class RomTest(unittest.TestCase):
         self.assertEqual(self.pos(), start)
 
     def test_dpad_moves_sprite(self):
-        for button, dx, dy in [(NES_INPUT_RIGHT, 1, 0), (NES_INPUT_LEFT, -1, 0),
-                               (NES_INPUT_DOWN, 0, 1), (NES_INPUT_UP, 0, -1)]:
+        for button, dx, dy in [(RIGHT, 1, 0), (LEFT, -1, 0), (DOWN, 0, 1), (UP, 0, -1)]:
             with self.subTest(button=button):
                 x0, y0 = self.pos()
                 self.hold(button, 20)
@@ -91,23 +55,23 @@ class RomTest(unittest.TestCase):
                 self.assertEqual(x1 - x0 if dx == 0 else y1 - y0, 0)
 
     def test_clamped_to_screen(self):
-        self.hold(NES_INPUT_LEFT | NES_INPUT_UP, 300)
+        self.hold(LEFT | UP, 300)
         self.assertEqual(self.pos(), (DEF["PLAYER_MIN_X"], DEF["PLAYER_MIN_Y"]))
-        self.hold(NES_INPUT_RIGHT | NES_INPUT_DOWN, 300)
+        self.hold(RIGHT | DOWN, 300)
         self.assertEqual(self.pos(), (DEF["PLAYER_MAX_X"], DEF["PLAYER_MAX_Y"]))
 
     def test_oam_matches_player(self):
-        self.hold(NES_INPUT_RIGHT, 10)
-        self.nes.step(1)
+        self.hold(RIGHT, 10)
+        self.m.step(1)
         x, y = self.pos()
-        oam_y, tile, attr, oam_x = (self.nes[OAM_BUF + i] for i in range(4))
+        oam_y, tile, attr, oam_x = (self.m.nes[OAM_BUF + i] for i in range(4))
         self.assertEqual((oam_x, oam_y, tile, attr), (x, y, 1, 0))
 
     def test_sprite_is_drawn_where_expected(self):
         """Check the actual rendered pixels move with the sprite."""
-        before = self.nes.step(1).astype(int)
-        self.hold(NES_INPUT_RIGHT, 40)
-        after = self.nes.step(1).astype(int)
+        before = self.m.step(1).astype(int)
+        self.hold(RIGHT, 40)
+        after = self.m.step(1).astype(int)
         x, y = self.pos()
         diff = np.any(before != after, axis=2)
         ys, xs = np.nonzero(diff)

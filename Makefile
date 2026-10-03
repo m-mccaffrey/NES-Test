@@ -1,6 +1,12 @@
-NAME   := game
+# Each directory in games/ is one ROM: build/<game>.nes.
+#   games/<game>/*.c, *.s   sources (main.c is the hardware side; every other
+#                           .c file must be hardware-free so it can also be
+#                           compiled on the host for unit tests)
+#   games/<game>/tiles.txt  CHR tiles (tools/make_chr.py)
+#   games/<game>/tests/     test_*.c host unit tests, test_*.py emulator tests
+
+GAMES  := $(notdir $(wildcard games/*))
 BUILD  := build
-ROM    := $(BUILD)/$(NAME).nes
 
 CC65   ?= cc65
 CA65   ?= ca65
@@ -9,51 +15,76 @@ PYTHON ?= python3
 HOSTCC ?= cc
 
 CFLAGS := -Oirs -t nes -I lib/neslib
-SRCS   := src/main.c src/player.c
-OBJS   := $(BUILD)/crt0.o $(SRCS:src/%.c=$(BUILD)/%.o)
 
-.PHONY: all test unit-test rom-test clean screenshot
+.PHONY: all test unit-test rom-test clean screenshot $(GAMES)
 .SECONDARY:
+.DELETE_ON_ERROR:
 
-all: $(ROM)
+all: $(GAMES)
 
-$(BUILD):
-	mkdir -p $@
+# --- per-game rules -------------------------------------------------------
+define GAME_RULES
+$(1)_C     := $$(wildcard games/$(1)/*.c)
+$(1)_S     := $$(wildcard games/$(1)/*.s)
+$(1)_OBJS  := $(BUILD)/$(1)/crt0.o $$($(1)_C:games/%.c=$(BUILD)/%.o) $$($(1)_S:games/%.s=$(BUILD)/%.o)
+$(1)_LOGIC := $$(filter-out games/$(1)/main.c,$$($(1)_C))
+$(1)_UNIT  := $$(patsubst games/$(1)/tests/%.c,$(BUILD)/$(1)/tests/%,$$(wildcard games/$(1)/tests/test_*.c))
 
-$(BUILD)/tiles.chr: tools/make_chr.py | $(BUILD)
-	$(PYTHON) $< $@
+$(1): $(BUILD)/$(1).nes
 
-$(BUILD)/crt0.o: lib/neslib/crt0.s lib/neslib/*.sinc $(BUILD)/tiles.chr
-	$(CA65) -t nes -I lib/neslib --bin-include-dir $(BUILD) $< -o $@
+$(BUILD)/$(1).nes: $$($(1)_OBJS) nes.cfg
+	$(LD65) -C nes.cfg -o $$@ $$($(1)_OBJS) nes.lib \
+		-m $(BUILD)/$(1).map -Ln $(BUILD)/$(1).labels --dbgfile $(BUILD)/$(1).dbg
 
-$(BUILD)/%.s: src/%.c src/*.h lib/neslib/neslib.h | $(BUILD)
-	$(CC65) $(CFLAGS) $< -o $@
+$(BUILD)/$(1)/tests/%: games/$(1)/tests/%.c $$($(1)_LOGIC) $$(wildcard games/$(1)/*.h)
+	@mkdir -p $$(@D)
+	$(HOSTCC) -std=c99 -Wall -Wextra -Werror -Igames/$(1) $$< $$($(1)_LOGIC) -o $$@
+
+unit-test-$(1): $$($(1)_UNIT)
+	@for t in $$^; do echo "== $$$$t"; ./$$$$t || exit 1; done
+
+rom-test-$(1): $(BUILD)/$(1).nes
+	@if ls games/$(1)/tests/test_*.py >/dev/null 2>&1; then \
+		$(PYTHON) -m unittest discover -s games/$(1)/tests -p 'test_*.py' -v; fi
+
+test-$(1): unit-test-$(1) rom-test-$(1)
+.PHONY: unit-test-$(1) rom-test-$(1) test-$(1)
+endef
+$(foreach g,$(GAMES),$(eval $(call GAME_RULES,$(g))))
+
+# --- shared pattern rules ---------------------------------------------------
+$(BUILD)/%/tiles.chr: games/%/tiles.txt tools/make_chr.py $(wildcard assets/*.txt)
+	@mkdir -p $(@D)
+	$(PYTHON) tools/make_chr.py $< $@
+
+$(BUILD)/%/crt0.o: lib/neslib/crt0.s $(wildcard lib/neslib/*.sinc) $(BUILD)/%/tiles.chr
+	$(CA65) -t nes -I lib/neslib --bin-include-dir $(@D) $< -o $@
+
+$(BUILD)/%.o: games/%.s
+	@mkdir -p $(@D)
+	$(CA65) -t nes $< -o $@
+
+$(BUILD)/%.s: games/%.c $(wildcard games/*/*.h) lib/neslib/neslib.h
+	@mkdir -p $(@D)
+	$(CC65) $(CFLAGS) -I $(dir $<) $< -o $@
 
 $(BUILD)/%.o: $(BUILD)/%.s
 	$(CA65) -t nes $< -o $@
 
-$(ROM): $(OBJS) nes.cfg
-	$(LD65) -C nes.cfg -o $@ $(OBJS) nes.lib \
-		-m $(BUILD)/$(NAME).map -Ln $(BUILD)/$(NAME).labels --dbgfile $(BUILD)/$(NAME).dbg
-
-# Host-compiled unit tests of the pure game logic.
-$(BUILD)/test_player: tests/test_player.c src/player.c src/player.h | $(BUILD)
-	$(HOSTCC) -std=c99 -Wall -Wextra -Werror -Isrc tests/test_player.c src/player.c -o $@
-
-unit-test: $(BUILD)/test_player
-	$<
-
-# Emulator-driven tests of the real ROM (needs: pip install cynes numpy).
-rom-test: $(ROM)
-	$(PYTHON) -m unittest discover -s tests -p 'test_*.py' -v
-
+# --- aggregate targets --------------------------------------------------------
+unit-test: $(GAMES:%=unit-test-%)
+rom-test: $(GAMES:%=rom-test-%)
 test: unit-test rom-test
+
+# Headless screenshot, e.g.
+#   make screenshot GAME=shooter FRAMES=300 HOLD="1:right,a 3:start" FOURSCORE=1
+GAME      ?= shooter
+FRAMES    ?= 90
+HOLD      ?=
+FOURSCORE ?=
+screenshot: $(BUILD)/$(GAME).nes
+	$(PYTHON) tools/screenshot.py $< $(BUILD)/$(GAME).png --frames $(FRAMES) \
+		$(if $(FOURSCORE),--four-score) $(foreach h,$(HOLD),--hold $(h))
 
 clean:
 	rm -rf $(BUILD)
-
-# Headless screenshot: make screenshot [FRAMES=90] [HOLD="right down"]
-FRAMES ?= 90
-HOLD   ?=
-screenshot: $(ROM)
-	$(PYTHON) tools/screenshot.py $(ROM) $(BUILD)/screenshot.png $(FRAMES) $(HOLD)

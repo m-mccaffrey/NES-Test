@@ -3,18 +3,24 @@ on: [push, pull_request]
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    env:
+      REQUIRE_FOURSCORE: "1"   # fail (not skip) 4-player tests without the patched emulator
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: sudo apt-get update && sudo apt-get install -y cc65
-      - run: pip install cynes numpy
+      - name: Install cynes with Four Score support
+        run: pip install numpy && ./tools/install_cynes.sh
       - run: make test
-      - run: make screenshot HOLD="right down" FRAMES=120
+      - name: Screenshots
+        run: |
+          make screenshot GAME=demo FRAMES=120 HOLD="1:right,down"
+          make screenshot GAME=shooter FRAMES=400 FOURSCORE=1 HOLD="2:a 3:start 4:a"
       - uses: actions/upload-artifact@v4
         with:
-          name: rom
+          name: roms
           path: |
-            build/game.nes
-            build/screenshot.png
+            build/*.nes
+            build/*.png

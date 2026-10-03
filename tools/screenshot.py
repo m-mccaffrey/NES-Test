@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Run the ROM headlessly and save a PNG of a frame.
+"""Run a ROM headlessly and save a PNG of the last frame.
 
-usage: screenshot.py ROM OUT.png [FRAMES] [BUTTONS...]
-  BUTTONS: any of up down left right a b start select, held the whole time.
+usage: screenshot.py ROM OUT.png [--frames N] [--four-score]
+                     [--hold PLAYER:BUTTON[,BUTTON...]]...
+
+  --hold 1:right,a   hold buttons on controller 1 for the whole run
+                     (buttons: up down left right a b start select)
+  --four-score       attach a Four Score so controllers 3/4 work
+                     (needs the patched cynes, see tools/install_cynes.sh)
 """
+import argparse
 import struct
-import sys
 import zlib
 
 import cynes
@@ -29,16 +34,31 @@ def write_png(path, frame):
         f.write(chunk(b"IEND", b""))
 
 
+def parse_hold(spec):
+    player, _, buttons = spec.partition(":")
+    bits = 0
+    for name in filter(None, buttons.split(",")):
+        bits |= BUTTONS[name.lower()]
+    return (int(player) - 1) * 8, bits
+
+
 def main():
-    rom, out = sys.argv[1], sys.argv[2]
-    frames = int(sys.argv[3]) if len(sys.argv) > 3 else 60
-    pad = 0
-    for name in sys.argv[4:]:
-        pad |= BUTTONS[name.lower()]
-    nes = cynes.NES(rom)
-    nes.controller = pad
-    frame = nes.step(frames)
-    write_png(out, frame[:, :, :3].copy())
+    ap = argparse.ArgumentParser()
+    ap.add_argument("rom")
+    ap.add_argument("out")
+    ap.add_argument("--frames", type=int, default=60)
+    ap.add_argument("--four-score", action="store_true")
+    ap.add_argument("--hold", action="append", default=[])
+    args = ap.parse_args()
+
+    nes = cynes.NES(args.rom)
+    if args.four_score:
+        nes.four_score = True
+    for spec in args.hold:
+        shift, bits = parse_hold(spec)
+        nes.controller |= bits << shift
+    frame = nes.step(args.frames)
+    write_png(args.out, frame[:, :, :3].copy())
 
 
 if __name__ == "__main__":

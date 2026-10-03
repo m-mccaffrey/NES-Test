@@ -1,0 +1,21 @@
+# CHR tiles for the D-pad demo (see tools/make_chr.py for the format).
+
+tile 0x01   # player: smiley
+..3333..
+.333333.
+33133133
+33333333
+31333313
+33111133
+.333333.
+..3333..
+
+tile 0x02   # background border brick
+33333333
+1112.111
+1112.111
+22222222
+33333333
+1.1112.1
+1.1112.1
+22222222

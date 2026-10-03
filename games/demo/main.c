@@ -9,12 +9,6 @@
 #define TILE_PLAYER 0x01
 #define TILE_BG     0x02
 
-/* Required by neslib's display.sinc helpers (next free OAM offset). */
-#pragma bss-name(push, "ZEROPAGE")
-unsigned char oam_off;
-#pragma bss-name(pop)
-#pragma zpsym("oam_off")
-
 /* Exported (non-static) so tests can find its address in the label file. */
 player_t player;
 
